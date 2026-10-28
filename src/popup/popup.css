@@ -1,0 +1,146 @@
+@import "tailwindcss";
+
+:root {
+  font-family: Inter, "Segoe UI", sans-serif;
+  color: #202943;
+  background: #f4f6fc;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+body {
+  background: #f4f6fc;
+  font-size: 14px;
+}
+
+.popup-shell {
+  width: 420px;
+  max-width: 100vw;
+  min-height: 300px;
+  overflow-x: hidden;
+  background: #f4f6fc;
+}
+
+.popup-header {
+  padding: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, #3730a3, #4f46e5 60%, #6366f1);
+}
+
+.popup-header h1 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 750;
+  letter-spacing: -0.4px;
+}
+
+.popup-header p {
+  margin: 5px 0 0;
+  color: #e0e7ff;
+}
+
+.popup-panel {
+  padding: 22px;
+}
+
+.popup-card {
+  padding: 20px;
+  border: 1px solid #e3e8f4;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(31 41 85 / 6%);
+}
+
+.popup-title {
+  margin: 0 0 7px;
+  color: #202943;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.popup-description {
+  margin: 0 0 20px;
+  color: #69738b;
+  line-height: 1.6;
+}
+
+.popup-field-label {
+  display: block;
+  margin-bottom: 7px;
+  color: #34405b;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.popup-input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #d7deed;
+  border-radius: 10px;
+  outline: none;
+  background: #fff;
+  color: #202943;
+  font: inherit;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+
+.popup-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 15%);
+}
+
+.popup-primary-button {
+  width: 100%;
+  min-height: 45px;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #4338ca, #6366f1);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 150ms, transform 150ms;
+}
+
+.popup-primary-button:hover {
+  filter: brightness(1.07);
+}
+
+.popup-primary-button:active {
+  transform: scale(0.99);
+}
+
+.popup-error {
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 9px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.popup-muted {
+  color: #69738b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+button:focus-visible {
+  outline: 3px solid #a5b4fc;
+  outline-offset: 2px;
+}

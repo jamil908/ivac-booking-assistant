@@ -43,7 +43,9 @@ export async function setMasterPassword(password: string): Promise<void> {
 
   // Store encryption key in session (memory only)
   const keyExport = await exportKey(key);
-  sessionStorage.setItem(ENCRYPTION_KEY_SESSION, keyExport);
+ await chrome.storage.session.set({
+  [ENCRYPTION_KEY_SESSION]: keyExport,
+});
 
   // Update lock state
   await updateLockState(false);
@@ -74,7 +76,9 @@ export async function unlockExtension(password: string): Promise<boolean> {
   const salt = base64ToBuffer(stored.salt);
   const { key } = await deriveKeyFromPassword(password, new Uint8Array(salt));
   const keyExport = await exportKey(key);
-  sessionStorage.setItem(ENCRYPTION_KEY_SESSION, keyExport);
+ await chrome.storage.session.set({
+  [ENCRYPTION_KEY_SESSION]: keyExport,
+});
 
   // Update lock state
   await updateLockState(false);
@@ -88,7 +92,7 @@ export async function unlockExtension(password: string): Promise<boolean> {
  */
 export async function lockExtension(): Promise<void> {
   // Clear session encryption key
-  sessionStorage.removeItem(ENCRYPTION_KEY_SESSION);
+  await chrome.storage.session.remove(ENCRYPTION_KEY_SESSION);
 
   // Update lock state
   await updateLockState(true);
@@ -119,11 +123,12 @@ export async function getEncryptionKey(): Promise<CryptoKey | null> {
   if (locked) {
     return null;
   }
+const result = await chrome.storage.session.get(ENCRYPTION_KEY_SESSION);
+const keyExport = result[ENCRYPTION_KEY_SESSION] as string | undefined;
 
-  const keyExport = sessionStorage.getItem(ENCRYPTION_KEY_SESSION);
-  if (!keyExport) {
-    return null;
-  }
+if (!keyExport) {
+  return null;
+}
 
   try {
     return await importKey(keyExport);

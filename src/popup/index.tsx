@@ -7,16 +7,18 @@ import { createRoot } from 'react-dom/client';
 import type { ApplicantProfile, BookingState } from '../types';
 import { ProfileList } from '../features/profiles/ProfileList';
 import { ProfileForm } from '../features/profiles/ProfileForm';
-
+import './popup.css';
 function Popup() {
   const [profiles, setProfiles] = useState<ApplicantProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [bookingState, setBookingState] = useState<BookingState | null>(null);
-  const [view, setView] = useState<'list' | 'create' | 'edit' | 'unlock'>('unlock');
+  const [view, setView] = useState<
+  'list' | 'create' | 'edit' | 'unlock' | 'setup'
+>('unlock');
   const [editingProfile, setEditingProfile] = useState<ApplicantProfile | undefined>();
   const [loading, setLoading] = useState(true);
-  const [locked, setLocked] = useState(true);
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [unlockError, setUnlockError] = useState('');
 
   useEffect(() => {
@@ -28,21 +30,57 @@ function Popup() {
       const status = await sendMessage({ type: 'CHECK_LOCK_STATUS' });
       const lockState = status.data as { isLocked: boolean; hasPassword: boolean };
       
-      setLocked(lockState.isLocked);
+     
       
-      if (!lockState.isLocked) {
-        setView('list');
-        await loadData();
-      } else {
-        setView('unlock');
-      }
+    if (!lockState.isLocked) {
+  setView('list');
+  await loadData();
+} else if (!lockState.hasPassword) {
+  setView('setup');
+} else {
+  setView('unlock');
+}
     } catch (error) {
       console.error('Failed to check lock status:', error);
     } finally {
       setLoading(false);
     }
   };
+const handleSetMasterPassword = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setUnlockError('');
 
+  if (password.length < 8) {
+    setUnlockError('Password must be at least 8 characters.');
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    setUnlockError('Passwords do not match.');
+    return;
+  }
+
+  try {
+    const result = await sendMessage({
+      type: 'SET_MASTER_PASSWORD',
+      payload: password,
+    });
+
+    if (!result.success) {
+      setUnlockError(result.error || 'Failed to set master password.');
+      return;
+    }
+
+    setPassword('');
+    setConfirmPassword('');
+    setView('list');
+    await loadData();
+  } catch (error) {
+    setUnlockError(
+      error instanceof Error ? error.message : 'Failed to set master password.'
+    );
+  }
+};
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
     setUnlockError('');
@@ -51,7 +89,6 @@ function Popup() {
       const result = await sendMessage({ type: 'UNLOCK_EXTENSION', payload: password });
       
       if (result.data === true) {
-        setLocked(false);
         setView('list');
         setPassword('');
         await loadData();
@@ -66,7 +103,6 @@ function Popup() {
   const handleLock = async () => {
     try {
       await sendMessage({ type: 'LOCK_EXTENSION' });
-      setLocked(true);
       setView('unlock');
       setProfiles([]);
     } catch (error) {
@@ -153,14 +189,78 @@ function Popup() {
     );
   }
 
+
+if (view === 'setup') {
+  return (
+    <div className="popup-shell">
+      <div className="popup-header">
+        <h1 className="text-lg font-bold">IVAC Assistant</h1>
+        <p className="text-sm opacity-90">Create Master Password</p>
+      </div>
+
+      <div className="popup-panel">
+        <p className="text-sm text-gray-600 mb-4">
+          Create a password of at least 8 characters.
+        </p>
+
+        <form onSubmit={handleSetMasterPassword} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-2">
+              Master Password
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Create a password"
+              autoComplete="new-password"
+              required
+              minLength={8}
+              className="w-full px-3 py-2 border rounded-md"
+            />
+          </div>
+
+          <div>
+            <label className="block popup-primary-button text-sm font-medium mb-2">
+              Confirm Password
+            </label>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Enter password again"
+              autoComplete="new-password"
+              required
+              minLength={8}
+              className="w-full px-3 py-2 border rounded-md"
+            />
+          </div>
+
+          {unlockError && (
+            <p className="text-sm text-red-600">{unlockError}</p>
+          )}
+
+          <button
+            type="submit"
+            className="w-full bg-blue-600 text-white py-2 rounded-md"
+          >
+            Set Master Password
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
   if (view === 'unlock') {
     return (
-      <div className="w-96">
-        <div className="bg-blue-600 text-white p-4">
-          <h1 className="text-lg font-bold">IVAC Assistant</h1>
+      <div className="popup-shell">
+        <div className="popup-header">
+          <h1 className="text-lg text-red-500 font-bold">IVAC Assistant</h1>
           <p className="text-sm opacity-90">Extension Locked</p>
         </div>
-        <div className="p-6">
+        <div className="popup-panel">
           <form onSubmit={handleUnlock} className="space-y-4">
             <div>
               <label className="block text-sm font-medium mb-2">
@@ -172,7 +272,8 @@ function Popup() {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter password to unlock"
                 autoFocus
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                
+                className=" popup-input w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             
@@ -201,9 +302,9 @@ function Popup() {
   return (
     <div className="w-96 max-h-[600px] overflow-y-auto">
       {/* Header */}
-      <div className="bg-blue-600 text-white p-4">
+      <div className="popup-header">
         <div className="flex items-center justify-between mb-2">
-          <h1 className="text-lg font-bold">IVAC Assistant</h1>
+          <h1 className="text-lg text-red-500 font-bold">IVAC Assistant</h1>
           <div className="flex gap-2">
             <button
               onClick={handleLock}

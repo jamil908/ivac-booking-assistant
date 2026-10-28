@@ -110,15 +110,29 @@ function fillLoginForm(credentials: { username?: string; password?: string }) {
 /**
  * Highlight the login button for user to click
  */
+
 function highlightLoginButton() {
-  const loginButton = document.querySelector<HTMLButtonElement>(
-    'button[type="submit"], input[type="submit"], button:has-text("login"), button:has-text("sign in")'
+  // Find a standard submit button first.
+  const submitButton = document.querySelector<
+    HTMLButtonElement | HTMLInputElement
+  >('button[type="submit"], input[type="submit"]');
+
+  // Fallback: find a button labelled Login or Sign in.
+  const textButton = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('button')
+  ).find((button) =>
+    /\b(log\s*in|sign\s*in)\b/i.test(button.textContent?.trim() ?? '')
   );
+
+  const loginButton = submitButton ?? textButton;
 
   if (loginButton) {
     loginButton.style.outline = '3px solid #10b981';
     loginButton.style.outlineOffset = '2px';
-    loginButton.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    loginButton.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+    });
   }
 }
 

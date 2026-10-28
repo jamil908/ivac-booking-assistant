@@ -165,6 +165,7 @@ export type MessageType =
   | 'CREATE_BOOKING_WINDOW'
   | 'PAUSE_BOOKING'
   | 'RESUME_BOOKING'
+  | 'SET_MASTER_PASSWORD'
   | 'CLEAR_ALL_DATA';
 
 export interface MessageResponse<T = unknown> {

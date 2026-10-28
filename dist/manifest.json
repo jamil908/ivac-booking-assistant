@@ -8,10 +8,11 @@
     "tabs",
     "scripting",
     "activeTab",
-    "notifications"
+    "notifications",
+    "alarms"
   ],
   "host_permissions": [
-    "https://payment.ivacbd.com/*",
+    "https://appointment.ivacbd.com/*",
     "https://*.ivacbd.com/*"
   ],
   "background": {
@@ -30,7 +31,7 @@
   "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": ["https://payment.ivacbd.com/*", "https://*.ivacbd.com/*"],
+      "matches": ["https://appointment.ivacbd.com/*", "https://*.ivacbd.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

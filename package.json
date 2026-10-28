@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build && npm run copy-assets",
-    "copy-assets": "pwsh -Command \"Copy-Item -Force manifest.json dist/ ; Copy-Item -Force -Recurse public/icons/* dist/icons/ 2>$null ; exit 0\"",
+    "copy-assets": "powershell -NoProfile -Command \"Copy-Item -Force manifest.json dist/; New-Item -ItemType Directory -Force dist/icons | Out-Null; if (Test-Path public/icons) { Copy-Item -Path public/icons/* -Destination dist/icons/ -Recurse -Force }\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

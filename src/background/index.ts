@@ -21,6 +21,8 @@ import {
 } from '../storage';
 import {
   isLocked,
+  hasPassword,
+  setMasterPassword,
   unlockExtension,
   lockExtension,
   getLockStatus,
@@ -87,6 +89,16 @@ async function handleMessage(message: Message, sender: chrome.runtime.MessageSen
   }
 
   switch (message.type) {
+    case 'SET_MASTER_PASSWORD': {
+  if (await hasPassword()) {
+    throw new Error('Master password is already set.');
+  }
+
+  const newPassword = message.payload as string;
+  await setMasterPassword(newPassword);
+
+  return true;
+}
     case 'CHECK_LOCK_STATUS':
       return await getLockStatus();
 
