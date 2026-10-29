@@ -1,7 +1,11 @@
 /**
  * Storage layer tests
  */
+vi.mock('../src/security/lock', () => ({
+  getEncryptionKey: vi.fn(),
+}));
 
+import { getEncryptionKey } from '../src/security/lock';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock Chrome API
@@ -20,6 +24,20 @@ const mockStorage = {
       return Promise.resolve();
     }),
   },
+  session: {
+  data: {} as Record<string, unknown>,
+  get: vi.fn((key: string) =>
+    Promise.resolve({ [key]: mockStorage.session.data[key] })
+  ),
+  set: vi.fn((items: Record<string, unknown>) => {
+    Object.assign(mockStorage.session.data, items);
+    return Promise.resolve();
+  }),
+  remove: vi.fn((key: string) => {
+    delete mockStorage.session.data[key];
+    return Promise.resolve();
+  }),
+},
 };
 
 // @ts-ignore - Mock global chrome API
@@ -29,8 +47,9 @@ global.chrome = {
 
 describe('Storage Layer', () => {
   beforeEach(() => {
-    mockStorage.local.data = {};
-  });
+  mockStorage.local.data = {};
+  mockStorage.session.data = {};
+});
 
   it('should initialize storage with default settings', async () => {
     const { initializeStorage, getSettings } = await import('../src/storage');
@@ -197,5 +216,84 @@ describe('Encryption', () => {
     // Different IVs should produce different ciphertexts
     expect(result1.encrypted).not.toBe(result2.encrypted);
     expect(result1.iv).not.toBe(result2.iv);
+  });
+});
+
+describe('Credential security', () => {
+  beforeEach(() => {
+    vi.mocked(getEncryptionKey).mockReset();
+    vi.mocked(getEncryptionKey).mockResolvedValue(null);
+  });
+
+  const profile = {
+    name: 'Security Test',
+    email: 'security@example.com',
+    phone: '0123456789',
+    passportNumber: 'AB123456',
+    nationality: 'Bangladeshi',
+    dateOfBirth: '1990-01-01',
+    visaType: 'tourist' as const,
+    center: 'dhaka' as const,
+    documents: [],
+    preferredDates: [],
+    ivacUsername: 'test-user',
+    ivacPassword: 'test-password',
+  };
+
+  it('should reject saving credentials while locked', async () => {
+    const { saveProfile } = await import('../src/storage');
+
+    await expect(saveProfile(profile)).rejects.toThrow(
+      /unlock the extension/i
+    );
+  });
+
+  it('should encrypt credentials before storing them', async () => {
+    const { deriveKeyFromPassword } =
+      await import('../src/security/encryption');
+    const { saveProfile, getProfile } = await import('../src/storage');
+
+    const { key } = await deriveKeyFromPassword('test-master-password');
+    vi.mocked(getEncryptionKey).mockResolvedValue(key);
+
+    const saved = await saveProfile(profile);
+    const raw = mockStorage.local.data['ivac_data'] as any;
+    const stored = raw.profiles[saved.id];
+
+    expect(stored.ivacUsername).toMatch(/^enc:/);
+    expect(stored.ivacPassword).toMatch(/^enc:/);
+
+    const retrieved = await getProfile(saved.id);
+    expect(retrieved?.ivacUsername).toBe('test-user');
+    expect(retrieved?.ivacPassword).toBe('test-password');
+  });
+
+  it('should migrate legacy plaintext credentials when unlocked', async () => {
+    const { deriveKeyFromPassword } =
+      await import('../src/security/encryption');
+    const { getProfile } = await import('../src/storage');
+
+    const { key } = await deriveKeyFromPassword('test-master-password');
+    vi.mocked(getEncryptionKey).mockResolvedValue(key);
+
+    mockStorage.local.data['ivac_data'] = {
+      profiles: {
+        legacy: {
+          ...profile,
+          id: 'legacy',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      bookingStates: {},
+      settings: {},
+      isLocked: false,
+    };
+
+    const result = await getProfile('legacy');
+    const raw = mockStorage.local.data['ivac_data'] as any;
+
+    expect(result?.ivacPassword).toBe('test-password');
+    expect(raw.profiles.legacy.ivacPassword).toMatch(/^enc:/);
   });
 });

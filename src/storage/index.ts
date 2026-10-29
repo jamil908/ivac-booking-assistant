@@ -5,7 +5,7 @@
 
 import type { ApplicantProfile, BookingState, ExtensionSettings, StorageData } from '../types';
 import { encryptData, decryptData, generateId } from '../security/encryption';
-
+import { getEncryptionKey } from '../security/lock';
 const STORAGE_KEY = 'ivac_data';
 
 /**
@@ -45,21 +45,38 @@ async function setStorageData(data: Partial<StorageData>): Promise<void> {
 /**
  * Get all profiles
  */
+/**
+ * Get all profiles, decrypting credentials only while unlocked.
+ */
 export async function getProfiles(): Promise<ApplicantProfile[]> {
   const data = await getStorageData();
-  return Object.values(data?.profiles ?? {});
+  const profiles = Object.values(data?.profiles ?? {});
+
+  const result: ApplicantProfile[] = [];
+
+  for (const profile of profiles) {
+    result.push(await readAndMigrateProfile(profile));
+  }
+
+  return result;
 }
 
 /**
- * Get profile by ID
+ * Get a profile by ID.
  */
-export async function getProfile(id: string): Promise<ApplicantProfile | null> {
+export async function getProfile(
+  id: string
+): Promise<ApplicantProfile | null> {
   const data = await getStorageData();
-  return data?.profiles[id] ?? null;
+  const profile = data?.profiles?.[id];
+
+  if (!profile) return null;
+
+  return readAndMigrateProfile(profile);
 }
 
 /**
- * Save profile (create or update)
+ * Save a profile with encrypted IVAC credentials.
  */
 export async function saveProfile(
   profile: Omit<ApplicantProfile, 'id' | 'createdAt' | 'updatedAt'>,
@@ -67,21 +84,174 @@ export async function saveProfile(
 ): Promise<ApplicantProfile> {
   const data = await getStorageData();
   const now = new Date().toISOString();
-  
+  const existing = id ? data?.profiles?.[id] : undefined;
+
   const newProfile: ApplicantProfile = {
     ...profile,
+    // Preserve existing credentials if the caller omits them.
+    ivacUsername:
+      profile.ivacUsername === undefined
+        ? existing?.ivacUsername
+        : profile.ivacUsername,
+    ivacPassword:
+      profile.ivacPassword === undefined
+        ? existing?.ivacPassword
+        : profile.ivacPassword,
     id: id ?? generateId(),
-    createdAt: id ? (data?.profiles[id]?.createdAt ?? now) : now,
+    createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
 
+  const protectedProfile = await encryptCredentialsForStorage(newProfile);
+
   const updatedProfiles = {
     ...data?.profiles,
-    [newProfile.id]: newProfile,
+    [protectedProfile.id]: protectedProfile,
   };
 
   await setStorageData({ profiles: updatedProfiles });
-  return newProfile;
+
+  // Return the caller's plaintext profile, not encrypted values.
+  return {
+    ...newProfile,
+    ivacUsername:
+      profile.ivacUsername === undefined
+        ? await decryptStoredCredential(existing?.ivacUsername)
+        : profile.ivacUsername,
+    ivacPassword:
+      profile.ivacPassword === undefined
+        ? await decryptStoredCredential(existing?.ivacPassword)
+        : profile.ivacPassword,
+  };
+}
+
+/**
+ * Encrypt credentials using the current unlocked session key.
+ */
+async function encryptCredentialsForStorage(
+  profile: ApplicantProfile
+): Promise<ApplicantProfile> {
+  const username = profile.ivacUsername;
+  const password = profile.ivacPassword;
+
+  const needsEncryption = [username, password].some(
+    (value) => typeof value === 'string' && value.length > 0 &&
+      !value.startsWith('enc:')
+  );
+
+  const needsDecryptionKey = [username, password].some(
+    (value) => typeof value === 'string' && value.startsWith('enc:')
+  );
+
+  if (!needsEncryption && !needsDecryptionKey) {
+    return profile;
+  }
+
+  const key = await getEncryptionKey();
+
+  if (!key) {
+    throw new Error('Unlock the extension before accessing credentials.');
+  }
+
+  return {
+    ...profile,
+    ivacUsername: await encryptCredential(username, key),
+    ivacPassword: await encryptCredential(password, key),
+  };
+}
+
+/**
+ * Read a stored profile and migrate legacy plaintext credentials.
+ */
+async function readAndMigrateProfile(
+  profile: ApplicantProfile
+): Promise<ApplicantProfile> {
+  const username = profile.ivacUsername;
+  const password = profile.ivacPassword;
+
+  const hasCredentials = [username, password].some(
+    (value) => typeof value === 'string' && value.length > 0
+  );
+
+  if (!hasCredentials) return profile;
+
+  const key = await getEncryptionKey();
+
+  if (!key) {
+    throw new Error('Unlock the extension before accessing credentials.');
+  }
+
+  const decrypted: ApplicantProfile = {
+    ...profile,
+    ivacUsername: await decryptCredential(username, key),
+    ivacPassword: await decryptCredential(password, key),
+  };
+
+  const migrated = await encryptCredentialsForStorage(decrypted);
+
+  // Save migrated credentials only if legacy plaintext was present.
+  if (
+    migrated.ivacUsername !== username ||
+    migrated.ivacPassword !== password
+  ) {
+    const data = await getStorageData();
+
+    await setStorageData({
+      profiles: {
+        ...data?.profiles,
+        [profile.id]: {
+          ...profile,
+          ivacUsername: migrated.ivacUsername,
+          ivacPassword: migrated.ivacPassword,
+        },
+      },
+    });
+  }
+
+  return decrypted;
+}
+
+async function encryptCredential(
+  value: string | undefined,
+  key: CryptoKey
+): Promise<string | undefined> {
+  if (!value) return value;
+
+  if (value.startsWith('enc:')) {
+    return value;
+  }
+
+  const result = await encryptData(value, key);
+  return `enc:${result.encrypted}:${result.iv}`;
+}
+
+async function decryptCredential(
+  value: string | undefined,
+  key: CryptoKey
+): Promise<string | undefined> {
+  if (!value || !value.startsWith('enc:')) return value;
+
+  const parts = value.split(':');
+
+  if (parts.length !== 3 || !parts[1] || !parts[2]) {
+    throw new Error('Stored credential has an invalid format.');
+  }
+
+  return decryptData(parts[1], parts[2], key);
+}
+
+async function decryptStoredCredential(
+  value: string | undefined
+): Promise<string | undefined> {
+  if (!value || !value.startsWith('enc:')) return value;
+
+  const key = await getEncryptionKey();
+
+  if (!key) {
+    throw new Error('Unlock the extension before accessing credentials.');
+  }
+
+  return decryptCredential(value, key);
 }
 
 /**
