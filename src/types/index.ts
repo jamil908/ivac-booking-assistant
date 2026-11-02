@@ -153,6 +153,8 @@ export type MessageType =
   | 'AUTOFILL_LOGIN'
   | 'REQUEST_OTP'
   | 'SUBMIT_OTP'
+  | 'CHECK_PAYMENT_STATUS'
+  | 'SAVE_INVOICE'
   | 'SUBMIT_DOCUMENTS'
   | 'SELECT_DATE'
   | 'VERIFY_PAYMENT'

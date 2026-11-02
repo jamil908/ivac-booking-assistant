@@ -159,6 +159,12 @@ async function handleMessage(message: Message, sender: chrome.runtime.MessageSen
       await clearAllData();
       return { success: true };
 
+    case 'CHECK_PAYMENT_STATUS':
+      return await handleCheckPaymentStatus(sender.tab?.id, message.payload as string);
+
+    case 'SAVE_INVOICE':
+      return await handleSaveInvoice(sender.tab?.id, message.payload as string);
+
     case 'CREATE_BOOKING_WINDOW':
       return await createBookingWindow(message.payload as string);
 
@@ -249,20 +255,137 @@ async function handleOTPSubmit(
 
   const { profileId, otp } = payload;
 
-  // Send OTP to content script
-  await chrome.tabs.sendMessage(tabId, {
-    type: 'SUBMIT_OTP',
-    payload: { otp },
-  });
+  if (!otp || otp.length < 4) {
+    throw new Error('Invalid OTP format');
+  }
 
-  // Update booking state
-  await updateBookingState(profileId, {
-    currentStep: 'authenticated',
-    otpRequested: false,
-    needsManualAction: false,
-  });
+  try {
+    // Send OTP to content script
+    await chrome.tabs.sendMessage(tabId, {
+      type: 'SUBMIT_OTP',
+      payload: { otp },
+    });
 
-  return { success: true };
+    // Update booking state to pending verification
+    // Do NOT mark as authenticated until user confirms success
+    await updateBookingState(profileId, {
+      currentStep: 'otp_required', // Keep in OTP state
+      otpRequested: false,
+      needsManualAction: true,
+      manualActionMessage: 'OTP submitted. Please click Submit button and verify login success.',
+    });
+
+    return { success: true };
+  } catch (error) {
+    // Content script not available
+    throw new Error('Cannot reach page. Ensure you are on the IVAC website.');
+  }
+}
+
+/**
+ * Check payment status (SAFE - READ ONLY)
+ */
+async function handleCheckPaymentStatus(
+  tabId: number | undefined,
+  profileId: string
+): Promise<unknown> {
+  if (!tabId) {
+    throw new Error('No tab ID provided');
+  }
+
+  try {
+    const result = await chrome.tabs.sendMessage(tabId, {
+      type: 'CHECK_PAYMENT_STATUS',
+    });
+
+    if (result.success) {
+      const paymentData = result.data as {
+        isPaymentPage: boolean;
+        status: string;
+        hasInvoice: boolean;
+        confirmationNumber?: string;
+        amount?: string;
+        message: string;
+      };
+
+      // Update booking state based on payment status
+      if (paymentData.status === 'success') {
+        await updateBookingState(profileId, {
+          currentStep: 'payment_success',
+          needsManualAction: paymentData.hasInvoice ? false : true,
+          manualActionMessage: paymentData.message,
+          paymentInfo: {
+            paymentStatus: 'success',
+            amount: paymentData.amount || 'Unknown',
+            currency: 'BDT',
+            transactionId: paymentData.confirmationNumber,
+          },
+          confirmationNumber: paymentData.confirmationNumber,
+        });
+      } else if (paymentData.status === 'failed') {
+        await updateBookingState(profileId, {
+          currentStep: 'payment_failed',
+          needsManualAction: true,
+          manualActionMessage: 'Payment failed. Please verify and retry if needed.',
+          paymentInfo: {
+            paymentStatus: 'failed',
+            amount: paymentData.amount || 'Unknown',
+            currency: 'BDT',
+          },
+        });
+      } else {
+        await updateBookingState(profileId, {
+          currentStep: 'payment_pending',
+          needsManualAction: true,
+          manualActionMessage: paymentData.message,
+        });
+      }
+
+      return paymentData;
+    }
+
+    throw new Error('Failed to check payment status');
+  } catch (error) {
+    throw new Error('Cannot check payment status. Ensure you are on a payment/confirmation page.');
+  }
+}
+
+/**
+ * Save invoice (SAFE - DOWNLOAD ONLY)
+ * NEVER reloads page or triggers payment
+ */
+async function handleSaveInvoice(
+  tabId: number | undefined,
+  profileId: string
+): Promise<{ success: boolean; message: string }> {
+  if (!tabId) {
+    throw new Error('No tab ID provided');
+  }
+
+  try {
+    const result = await chrome.tabs.sendMessage(tabId, {
+      type: 'SAVE_INVOICE',
+    });
+
+    if (result.success) {
+      // Update booking state
+      await updateBookingState(profileId, {
+        currentStep: 'invoice_saved',
+        needsManualAction: false,
+        manualActionMessage: undefined,
+      });
+
+      return {
+        success: true,
+        message: 'Invoice downloaded successfully',
+      };
+    }
+
+    throw new Error(result.error || 'Failed to save invoice');
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Failed to save invoice';
+    throw new Error(errorMessage);
+  }
 }
 
 /**

@@ -20,6 +20,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true });
       break;
 
+    case 'SUBMIT_OTP':
+      handleOTPSubmission(message.payload);
+      sendResponse({ success: true });
+      break;
+
+    case 'CHECK_PAYMENT_STATUS':
+      checkPaymentStatus()
+        .then((result) => sendResponse({ success: true, data: result }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true; // Async response
+
+    case 'SAVE_INVOICE':
+      saveInvoice()
+        .then((result) => sendResponse({ success: true, data: result }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true; // Async response
+
     default:
       sendResponse({ success: false, error: 'Unknown message type' });
   }
@@ -241,3 +258,260 @@ observer.observe(document.body, {
 window.addEventListener('beforeunload', () => {
   observer.disconnect();
 });
+
+/**
+ * Handle OTP submission (user-controlled)
+ * Only fills the OTP field, user must click submit
+ */
+function handleOTPSubmission(payload: { otp: string }) {
+  console.log('Handling OTP submission');
+
+  if (!payload?.otp) {
+    showNotification('OTP value is missing', 'error');
+    return;
+  }
+
+  // Find OTP input field using multiple selectors
+  const otpField = document.querySelector<HTMLInputElement>(
+    'input[name*="otp" i], input[id*="otp" i], input[placeholder*="otp" i], ' +
+    'input[type="text"][maxlength="4"], input[type="text"][maxlength="6"], ' +
+    'input[type="number"][maxlength="4"], input[type="number"][maxlength="6"]'
+  );
+
+  if (!otpField) {
+    console.error('OTP field not found');
+    showNotification('Could not find OTP input field on this page', 'error');
+    return;
+  }
+
+  // Fill OTP field
+  otpField.value = payload.otp;
+  otpField.dispatchEvent(new Event('input', { bubbles: true }));
+  otpField.dispatchEvent(new Event('change', { bubbles: true }));
+
+  // Highlight the submit button
+  const submitButton = document.querySelector<HTMLButtonElement>(
+    'button[type="submit"], input[type="submit"], button:has-text("verify"), button:has-text("submit")'
+  );
+
+  if (submitButton) {
+    submitButton.style.outline = '3px solid #10b981';
+    submitButton.style.outlineOffset = '2px';
+    submitButton.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  showNotification('OTP filled. Please review and click Submit button.', 'success');
+}
+
+/**
+ * Check payment status on current page (SAFE - READ ONLY)
+ * NEVER reloads, navigates, or resubmits payment
+ */
+async function checkPaymentStatus(): Promise<{
+  isPaymentPage: boolean;
+  status: 'success' | 'pending' | 'failed' | 'unknown';
+  hasInvoice: boolean;
+  invoiceUrl?: string;
+  confirmationNumber?: string;
+  amount?: string;
+  message: string;
+}> {
+  const url = window.location.href;
+  const pathname = window.location.pathname;
+  const bodyText = document.body.textContent?.toLowerCase() || '';
+
+  // Conservative payment page detection
+  const isPaymentPage = 
+    url.includes('/payment') ||
+    url.includes('/checkout') ||
+    url.includes('/invoice') ||
+    url.includes('/confirm') ||
+    pathname.includes('/payment') ||
+    pathname.includes('/invoice');
+
+  if (!isPaymentPage) {
+    return {
+      isPaymentPage: false,
+      status: 'unknown',
+      hasInvoice: false,
+      message: 'Not on a payment or confirmation page',
+    };
+  }
+
+  // Check for success indicators (conservative)
+  const successIndicators = [
+    'payment successful',
+    'transaction successful',
+    'booking confirmed',
+    'appointment confirmed',
+    'payment complete'
+  ];
+
+  const hasSuccessIndicator = successIndicators.some(indicator => 
+    bodyText.includes(indicator)
+  );
+
+  // Check for failure indicators
+  const failureIndicators = [
+    'payment failed',
+    'transaction failed',
+    'payment declined',
+    'insufficient funds'
+  ];
+
+  const hasFailureIndicator = failureIndicators.some(indicator =>
+    bodyText.includes(indicator)
+  );
+
+  // Look for invoice/confirmation elements
+  const invoiceLink = document.querySelector<HTMLAnchorElement>(
+    'a[href*="invoice"], a[href*="receipt"], a[href*="download"], ' +
+    'a:has-text("download invoice"), a:has-text("download receipt")'
+  );
+
+  const confirmationNumber = extractConfirmationNumber();
+  const amount = extractPaymentAmount();
+
+  let status: 'success' | 'pending' | 'failed' | 'unknown' = 'unknown';
+  let message = '';
+
+  if (hasSuccessIndicator && invoiceLink) {
+    status = 'success';
+    message = 'Payment appears successful. Invoice available.';
+  } else if (hasSuccessIndicator) {
+    status = 'success';
+    message = 'Payment appears successful. Invoice may not be available yet.';
+  } else if (hasFailureIndicator) {
+    status = 'failed';
+    message = 'Payment appears to have failed.';
+  } else if (bodyText.includes('processing') || bodyText.includes('pending')) {
+    status = 'pending';
+    message = 'Payment is pending. Please wait for confirmation.';
+  } else {
+    status = 'unknown';
+    message = 'Payment status is unclear. Please verify manually through official channels.';
+  }
+
+  return {
+    isPaymentPage: true,
+    status,
+    hasInvoice: !!invoiceLink,
+    invoiceUrl: invoiceLink?.href,
+    confirmationNumber,
+    amount,
+    message,
+  };
+}
+
+/**
+ * Extract confirmation/booking number from page
+ */
+function extractConfirmationNumber(): string | undefined {
+  const bodyText = document.body.textContent || '';
+  
+  // Look for confirmation number patterns
+  const patterns = [
+    /confirmation\s*(?:number|id|no\.?|#)\s*:?\s*([A-Z0-9]{6,20})/i,
+    /booking\s*(?:number|id|reference|no\.?|#)\s*:?\s*([A-Z0-9]{6,20})/i,
+    /transaction\s*(?:id|no\.?|#)\s*:?\s*([A-Z0-9]{6,20})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = bodyText.match(pattern);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Extract payment amount from page
+ */
+function extractPaymentAmount(): string | undefined {
+  const bodyText = document.body.textContent || '';
+  
+  // Look for amount patterns (BDT or other currencies)
+  const patterns = [
+    /(?:amount|total|paid)\s*:?\s*(BDT|৳|USD|\$|EUR|€)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+    /(?:BDT|৳|USD|\$|EUR|€)\s*(\d+(?:,\d{3})*(?:\.\d{2})?)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = bodyText.match(pattern);
+    if (match) {
+      return match[0];
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Save invoice/receipt (SAFE - DOWNLOAD ONLY)
+ * NEVER reloads page or triggers new payment
+ */
+async function saveInvoice(): Promise<{ success: boolean; message: string }> {
+  const paymentStatus = await checkPaymentStatus();
+
+  if (!paymentStatus.isPaymentPage) {
+    throw new Error('Not on a payment or confirmation page');
+  }
+
+  if (!paymentStatus.hasInvoice) {
+    throw new Error('No invoice download link found on this page');
+  }
+
+  if (!paymentStatus.invoiceUrl) {
+    throw new Error('Invoice URL is not available');
+  }
+
+  // Validate invoice URL (security check)
+  const invoiceUrl = paymentStatus.invoiceUrl;
+  const allowedDomains = ['ivacbd.com', 'appointment.ivacbd.com', 'payment.ivacbd.com'];
+  
+  try {
+    const url = new URL(invoiceUrl);
+    const isAllowed = allowedDomains.some(domain => 
+      url.hostname === domain || url.hostname.endsWith('.' + domain)
+    );
+
+    if (!isAllowed) {
+      throw new Error('Invoice URL is from an untrusted domain');
+    }
+
+    // Validate file extension
+    const validExtensions = ['.pdf', '.jpg', '.jpeg', '.png'];
+    const hasValidExtension = validExtensions.some(ext => 
+      invoiceUrl.toLowerCase().endsWith(ext)
+    );
+
+    if (!hasValidExtension && !invoiceUrl.includes('download') && !invoiceUrl.includes('invoice')) {
+      console.warn('Invoice URL may not be a document file');
+    }
+
+  } catch (error) {
+    throw new Error('Invalid invoice URL format');
+  }
+
+  // Create download link (safe method)
+  const downloadLink = document.createElement('a');
+  downloadLink.href = invoiceUrl;
+  downloadLink.download = `IVAC_Invoice_${Date.now()}.pdf`;
+  downloadLink.style.display = 'none';
+  document.body.appendChild(downloadLink);
+  
+  // Trigger download
+  downloadLink.click();
+  
+  // Clean up
+  document.body.removeChild(downloadLink);
+
+  showNotification('Invoice download started. Check your Downloads folder.', 'success');
+
+  return {
+    success: true,
+    message: 'Invoice download initiated',
+  };
+}
