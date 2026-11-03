@@ -20,10 +20,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true });
       break;
 
-    case 'SUBMIT_OTP':
-      handleOTPSubmission(message.payload);
-      sendResponse({ success: true });
-      break;
+case 'SUBMIT_OTP': {
+  const otp = message.payload?.otp;
+
+  if (
+    typeof otp !== 'string' ||
+    !/^\d{4,6}$/.test(otp)
+  ) {
+    sendResponse({
+      success: false,
+      error: 'Invalid OTP. Please enter a valid 4–6 digit OTP.',
+    });
+    break;
+  }
+
+  handleOTPSubmission({ otp });
+  sendResponse({ success: true });
+  break;
+}
 
     case 'CHECK_PAYMENT_STATUS':
       checkPaymentStatus()
@@ -81,12 +95,20 @@ function detectPageType() {
 function fillLoginForm(credentials: { username?: string; password?: string }) {
   console.log('Attempting to fill login form');
 
-  if (!credentials.username || !credentials.password) {
-    console.error('Missing credentials');
-    showNotification('Missing credentials. Please update your profile.', 'error');
-    return;
-  }
-
+if (
+  !credentials ||
+  typeof credentials.username !== 'string' ||
+  typeof credentials.password !== 'string' ||
+  !credentials.username.trim() ||
+  !credentials.password.trim()
+) {
+  console.error('Invalid or missing credentials');
+  showNotification(
+    'Missing or invalid credentials. Please update your profile.',
+    'error'
+  );
+  return;
+}
   // Find username/email field
   const usernameField = document.querySelector<HTMLInputElement>(
     'input[type="email"], input[type="text"][name*="email"], input[name*="username"], input[id*="email"], input[id*="username"]'
@@ -290,9 +312,11 @@ function handleOTPSubmission(payload: { otp: string }) {
   otpField.dispatchEvent(new Event('change', { bubbles: true }));
 
   // Highlight the submit button
-  const submitButton = document.querySelector<HTMLButtonElement>(
-    'button[type="submit"], input[type="submit"], button:has-text("verify"), button:has-text("submit")'
-  );
+  const submitButton = document.querySelector<
+  HTMLButtonElement | HTMLInputElement
+>(
+  'button[type="submit"], input[type="submit"]'
+);
 
   if (submitButton) {
     submitButton.style.outline = '3px solid #10b981';
@@ -365,10 +389,8 @@ async function checkPaymentStatus(): Promise<{
 
   // Look for invoice/confirmation elements
   const invoiceLink = document.querySelector<HTMLAnchorElement>(
-    'a[href*="invoice"], a[href*="receipt"], a[href*="download"], ' +
-    'a:has-text("download invoice"), a:has-text("download receipt")'
-  );
-
+  'a[href*="invoice"], a[href*="receipt"], a[href*="download"]'
+);
   const confirmationNumber = extractConfirmationNumber();
   const amount = extractPaymentAmount();
 

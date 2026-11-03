@@ -54,11 +54,29 @@ chrome.runtime.onMessage.addListener((
   sender,
   sendResponse: (response: MessageResponse) => void
 ) => {
+  // Accept messages only from this extension's own pages
+  const extensionOrigin = chrome.runtime.getURL('');
+
+  if (
+    sender.id !== chrome.runtime.id ||
+    !sender.url?.startsWith(extensionOrigin)
+  ) {
+    sendResponse({
+      success: false,
+      error: 'Unauthorized message sender.',
+    });
+    return false;
+  }
+
   handleMessage(message, sender)
     .then((data) => sendResponse({ success: true, data }))
-    .catch((error) => sendResponse({ success: false, error: error.message }));
-  
-  // Return true to indicate async response
+    .catch((error) =>
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+    );
+
   return true;
 });
 
@@ -66,27 +84,42 @@ chrome.runtime.onMessage.addListener((
  * Route messages to appropriate handlers
  */
 async function handleMessage(message: Message, sender: chrome.runtime.MessageSender): Promise<unknown> {
+    // Validate message before processing
+  if (
+    !message ||
+    typeof message !== 'object' ||
+    typeof message.type !== 'string'
+  ) {
+    throw new Error('Invalid extension message.');
+  }
+
   console.log('Background received message:', message.type);
 
-  // Update activity timestamp for non-sensitive operations
-  if (message.type !== 'CHECK_LOCK_STATUS') {
-    await updateLastActivity();
-  }
-
-  // Check if locked for sensitive operations
+  // Check extension lock state
   const locked = await isLocked();
-  const sensitiveOps = [
-    'GET_PROFILES',
-    'SAVE_PROFILE',
-    'DELETE_PROFILE',
-    'GET_BOOKING_STATE',
-    'AUTOFILL_LOGIN',
-    'SUBMIT_OTP',
-  ];
 
-  if (locked && sensitiveOps.includes(message.type)) {
-    throw new Error('Extension is locked. Please unlock to continue.');
-  }
+  // Only security lifecycle actions are allowed while locked
+  const allowedWhileLocked = new Set<string>([
+    'CHECK_LOCK_STATUS',
+    'SET_MASTER_PASSWORD',
+    'UNLOCK_EXTENSION',
+    'LOCK_EXTENSION',
+  ]);
+
+
+ 
+if (locked && !allowedWhileLocked.has(message.type)) {
+  throw new Error(
+    'Extension is locked. Please unlock to continue.'
+  );
+}
+
+// Record activity only when the extension is already unlocked.
+// Lock-management actions handle their own state transitions.
+if (!locked && !allowedWhileLocked.has(message.type)) {
+  await updateLastActivity();
+}
+
 
   switch (message.type) {
     case 'SET_MASTER_PASSWORD': {
@@ -132,10 +165,7 @@ async function handleMessage(message: Message, sender: chrome.runtime.MessageSen
     case 'GET_ALL_BOOKING_STATES':
       return await getAllBookingStates();
 
-    case 'UPDATE_BOOKING_STATE':
-      const { profileId, state } = message.payload as { profileId: string; state: Parameters<typeof updateBookingState>[1] };
-      return await updateBookingState(profileId, state);
-
+  
     case 'RESET_BOOKING':
       await resetBookingState(message.payload as string);
       return { success: true };
@@ -158,12 +188,6 @@ async function handleMessage(message: Message, sender: chrome.runtime.MessageSen
     case 'CLEAR_ALL_DATA':
       await clearAllData();
       return { success: true };
-
-    case 'CHECK_PAYMENT_STATUS':
-      return await handleCheckPaymentStatus(sender.tab?.id, message.payload as string);
-
-    case 'SAVE_INVOICE':
-      return await handleSaveInvoice(sender.tab?.id, message.payload as string);
 
     case 'CREATE_BOOKING_WINDOW':
       return await createBookingWindow(message.payload as string);
@@ -213,12 +237,28 @@ async function handleAutofillLogin(tabId: number | undefined, profileId: string)
 /**
  * Handle OTP request
  */
-async function handleOTPRequest(tabId: number | undefined, profileId: string): Promise<{ success: boolean }> {
-  if (!tabId) {
-    throw new Error('No tab ID provided');
+/**
+ * Handle OTP request
+ */
+async function handleOTPRequest(
+  tabId: number | undefined,
+  profileId: string
+): Promise<{ success: boolean }> {
+  if (
+    !tabId ||
+    typeof profileId !== 'string' ||
+    !profileId.trim()
+  ) {
+    throw new Error('Invalid tab or profile ID');
+  }
+
+  const profile = await getProfile(profileId);
+  if (!profile) {
+    throw new Error('Profile not found');
   }
 
   const settings = await getSettings();
+
   if (settings.notificationsEnabled) {
     await chrome.notifications.create({
       type: 'basic',
@@ -229,9 +269,12 @@ async function handleOTPRequest(tabId: number | undefined, profileId: string): P
     });
   }
 
-  // Update booking state
-  const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 min expiry
+  const otpExpiresAt = new Date(
+    Date.now() + 5 * 60 * 1000
+  ).toISOString();
+
   await updateBookingState(profileId, {
+    tabId,
     currentStep: 'otp_required',
     otpRequested: true,
     otpExpiresAt,
@@ -253,141 +296,58 @@ async function handleOTPSubmit(
     throw new Error('No tab ID provided');
   }
 
+  if (
+    !payload ||
+    typeof payload.profileId !== 'string' ||
+    !payload.profileId.trim() ||
+    typeof payload.otp !== 'string' ||
+    !/^\d{4,6}$/.test(payload.otp)
+  ) {
+    throw new Error('Invalid profile ID or OTP format');
+  }
+
   const { profileId, otp } = payload;
 
-  if (!otp || otp.length < 4) {
-    throw new Error('Invalid OTP format');
+  const state = await getBookingState(profileId);
+
+  if (!state || !state.otpRequested) {
+    throw new Error('No pending OTP request found');
   }
 
-  try {
-    // Send OTP to content script
-    await chrome.tabs.sendMessage(tabId, {
-      type: 'SUBMIT_OTP',
-      payload: { otp },
-    });
-
-    // Update booking state to pending verification
-    // Do NOT mark as authenticated until user confirms success
-    await updateBookingState(profileId, {
-      currentStep: 'otp_required', // Keep in OTP state
-      otpRequested: false,
-      needsManualAction: true,
-      manualActionMessage: 'OTP submitted. Please click Submit button and verify login success.',
-    });
-
-    return { success: true };
-  } catch (error) {
-    // Content script not available
-    throw new Error('Cannot reach page. Ensure you are on the IVAC website.');
+  if (state.tabId !== tabId) {
+    throw new Error('OTP does not belong to this browser tab');
   }
+
+  const expiryTime = state.otpExpiresAt
+    ? Date.parse(state.otpExpiresAt)
+    : NaN;
+
+  if (
+    !Number.isFinite(expiryTime) ||
+    Date.now() >= expiryTime
+  ) {
+    throw new Error('OTP has expired. Please request a new OTP.');
+  }
+
+  const response = await chrome.tabs.sendMessage(tabId, {
+    type: 'SUBMIT_OTP',
+    payload: { otp },
+  });
+
+  if (!response?.success) {
+    throw new Error('Could not send OTP to the IVAC page');
+  }
+
+  // OTP is filled, but authentication is NOT confirmed.
+  await updateBookingState(profileId, {
+    currentStep: 'otp_required',
+    otpRequested: true,
+    needsManualAction: true,
+    manualActionMessage: 'OTP filled. Please submit it manually and verify login.',
+  });
+
+  return { success: true };
 }
-
-/**
- * Check payment status (SAFE - READ ONLY)
- */
-async function handleCheckPaymentStatus(
-  tabId: number | undefined,
-  profileId: string
-): Promise<unknown> {
-  if (!tabId) {
-    throw new Error('No tab ID provided');
-  }
-
-  try {
-    const result = await chrome.tabs.sendMessage(tabId, {
-      type: 'CHECK_PAYMENT_STATUS',
-    });
-
-    if (result.success) {
-      const paymentData = result.data as {
-        isPaymentPage: boolean;
-        status: string;
-        hasInvoice: boolean;
-        confirmationNumber?: string;
-        amount?: string;
-        message: string;
-      };
-
-      // Update booking state based on payment status
-      if (paymentData.status === 'success') {
-        await updateBookingState(profileId, {
-          currentStep: 'payment_success',
-          needsManualAction: paymentData.hasInvoice ? false : true,
-          manualActionMessage: paymentData.message,
-          paymentInfo: {
-            paymentStatus: 'success',
-            amount: paymentData.amount || 'Unknown',
-            currency: 'BDT',
-            transactionId: paymentData.confirmationNumber,
-          },
-          confirmationNumber: paymentData.confirmationNumber,
-        });
-      } else if (paymentData.status === 'failed') {
-        await updateBookingState(profileId, {
-          currentStep: 'payment_failed',
-          needsManualAction: true,
-          manualActionMessage: 'Payment failed. Please verify and retry if needed.',
-          paymentInfo: {
-            paymentStatus: 'failed',
-            amount: paymentData.amount || 'Unknown',
-            currency: 'BDT',
-          },
-        });
-      } else {
-        await updateBookingState(profileId, {
-          currentStep: 'payment_pending',
-          needsManualAction: true,
-          manualActionMessage: paymentData.message,
-        });
-      }
-
-      return paymentData;
-    }
-
-    throw new Error('Failed to check payment status');
-  } catch (error) {
-    throw new Error('Cannot check payment status. Ensure you are on a payment/confirmation page.');
-  }
-}
-
-/**
- * Save invoice (SAFE - DOWNLOAD ONLY)
- * NEVER reloads page or triggers payment
- */
-async function handleSaveInvoice(
-  tabId: number | undefined,
-  profileId: string
-): Promise<{ success: boolean; message: string }> {
-  if (!tabId) {
-    throw new Error('No tab ID provided');
-  }
-
-  try {
-    const result = await chrome.tabs.sendMessage(tabId, {
-      type: 'SAVE_INVOICE',
-    });
-
-    if (result.success) {
-      // Update booking state
-      await updateBookingState(profileId, {
-        currentStep: 'invoice_saved',
-        needsManualAction: false,
-        manualActionMessage: undefined,
-      });
-
-      return {
-        success: true,
-        message: 'Invoice downloaded successfully',
-      };
-    }
-
-    throw new Error(result.error || 'Failed to save invoice');
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Failed to save invoice';
-    throw new Error(errorMessage);
-  }
-}
-
 /**
  * Create a new booking window for a profile
  */

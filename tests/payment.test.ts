@@ -2,7 +2,7 @@
  * Payment and Invoice Recovery Tests
  * Tests payment-safe behavior
  */
-
+// @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 
 describe('Payment Safety', () => {

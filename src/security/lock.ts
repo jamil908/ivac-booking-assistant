@@ -9,6 +9,15 @@ const MASTER_PASSWORD_KEY = 'ivac_master_password_hash';
 const ENCRYPTION_KEY_SESSION = 'ivac_encryption_key';
 const LOCK_STATE_KEY = 'ivac_lock_state';
 const LAST_ACTIVITY_KEY = 'ivac_last_activity';
+const PASSWORD_VERIFIER_ITERATIONS = 600000;
+
+interface StoredMasterPassword {
+  version?: number;
+  hash?: string;
+  salt: string;
+  verifier?: string;
+  verifierSalt?: string;
+}
 
 export interface LockState {
   isLocked: boolean;
@@ -24,63 +33,149 @@ export async function setMasterPassword(password: string): Promise<void> {
     throw new Error('Password must be at least 8 characters');
   }
 
-  // Derive key from password
-  const { key, salt } = await deriveKeyFromPassword(password);
-  
-  // Store password hash (for verification)
-  const encoder = new TextEncoder();
-  const passwordBuffer = encoder.encode(password);
-  const hash = await crypto.subtle.digest('SHA-256', passwordBuffer);
-  const hashBase64 = bufferToBase64(hash);
-  
-  // Store hash and salt
-  await chrome.storage.local.set({
-    [MASTER_PASSWORD_KEY]: {
-      hash: hashBase64,
-      salt: bufferToBase64(salt.buffer as ArrayBuffer),
-    },
-  });
+  const existing = await chrome.storage.local.get(MASTER_PASSWORD_KEY);
 
-  // Store encryption key in session (memory only)
-  const keyExport = await exportKey(key);
- await chrome.storage.session.set({
-  [ENCRYPTION_KEY_SESSION]: keyExport,
+  if (existing[MASTER_PASSWORD_KEY]) {
+    throw new Error('Master password is already set.');
+  }
+
+  // Preserve existing encryption key derivation.
+  const { key, salt } = await deriveKeyFromPassword(password);
+
+  // Generate a separate salt for password verification.
+  const verifierSalt = crypto.getRandomValues(new Uint8Array(16));
+
+  const verifier = await derivePasswordVerifier(
+    password,
+    verifierSalt
+  );
+
+ await chrome.storage.local.set({
+  [MASTER_PASSWORD_KEY]: {
+    version: 2,
+    salt: bufferToBase64(
+  new Uint8Array(salt).buffer as ArrayBuffer
+),
+    verifier,
+    verifierSalt: bufferToBase64(
+      verifierSalt.buffer as ArrayBuffer
+    ),
+  },
 });
 
-  // Update lock state
-  await updateLockState(false);
-}
+  const keyExport = await exportKey(key);
 
+  await chrome.storage.session.set({
+    [ENCRYPTION_KEY_SESSION]: keyExport,
+  });
+
+  await updateLockState(false);
+  await updateLastActivity();
+}
 /**
  * Verify password and unlock extension
  */
-export async function unlockExtension(password: string): Promise<boolean> {
+export async function unlockExtension(
+  password: string
+): Promise<boolean> {
   const result = await chrome.storage.local.get(MASTER_PASSWORD_KEY);
-  const stored = result[MASTER_PASSWORD_KEY] as { hash: string; salt: string } | undefined;
+
+  const stored = result[MASTER_PASSWORD_KEY] as
+    | StoredMasterPassword
+    | undefined;
 
   if (!stored) {
-    throw new Error('No master password set. Please set a password first.');
+    throw new Error(
+      'No master password set. Please set a password first.'
+    );
   }
 
-  // Verify password hash
-  const encoder = new TextEncoder();
-  const passwordBuffer = encoder.encode(password);
-  const hash = await crypto.subtle.digest('SHA-256', passwordBuffer);
-  const hashBase64 = bufferToBase64(hash);
-
-  if (hashBase64 !== stored.hash) {
-    return false; // Incorrect password
+  if (!stored.salt) {
+    throw new Error('Invalid master password data.');
   }
 
-  // Derive and store encryption key in session
+  let verified = false;
+
+  // New PBKDF2 verification
+  if (
+    stored.version === 2 &&
+    stored.verifier &&
+    stored.verifierSalt
+  ) {
+    const verifierSalt = new Uint8Array(
+      base64ToBuffer(stored.verifierSalt)
+    );
+
+    const calculatedVerifier = await derivePasswordVerifier(
+      password,
+      verifierSalt
+    );
+
+    verified = constantTimeEqual(
+      calculatedVerifier,
+      stored.verifier
+    );
+  }
+
+  // Legacy SHA-256 verification and automatic migration
+  else if (stored.hash) {
+    const encoder = new TextEncoder();
+    const passwordBuffer = encoder.encode(password);
+
+    const hash = await crypto.subtle.digest(
+      'SHA-256',
+      passwordBuffer
+    );
+
+    const calculatedHash = bufferToBase64(hash);
+
+    if (!constantTimeEqual(calculatedHash, stored.hash)) {
+      return false;
+    }
+
+    // Generate new verifier without changing encryption salt.
+    const verifierSalt = crypto.getRandomValues(
+      new Uint8Array(16)
+    );
+
+    const verifier = await derivePasswordVerifier(
+      password,
+      verifierSalt
+    );
+
+    // Preserve the original salt used for AES encryption.
+    await chrome.storage.local.set({
+      [MASTER_PASSWORD_KEY]: {
+        version: 2,
+        salt: stored.salt,
+        verifier,
+        verifierSalt: bufferToBase64(
+          verifierSalt.buffer as ArrayBuffer
+        ),
+      },
+    });
+
+    verified = true;
+  }
+
+  if (!verified) {
+    return false;
+  }
+
+  // IMPORTANT: Keep original encryption derivation unchanged.
   const salt = base64ToBuffer(stored.salt);
-  const { key } = await deriveKeyFromPassword(password, new Uint8Array(salt));
-  const keyExport = await exportKey(key);
- await chrome.storage.session.set({
-  [ENCRYPTION_KEY_SESSION]: keyExport,
-});
 
-  // Update lock state
+  const { key } = await deriveKeyFromPassword(
+    password,
+    new Uint8Array(salt)
+  );
+
+  const keyExport = await exportKey(key);
+
+  await chrome.storage.session.set({
+    [ENCRYPTION_KEY_SESSION]: keyExport,
+  });
+
   await updateLockState(false);
   await updateLastActivity();
 
@@ -239,4 +334,54 @@ function base64ToBuffer(base64: string): ArrayBuffer {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes.buffer;
+}
+
+async function derivePasswordVerifier(
+  password: string,
+  salt: Uint8Array
+): Promise<string> {
+  const encoder = new TextEncoder();
+
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: salt.buffer as ArrayBuffer,
+      iterations: PASSWORD_VERIFIER_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    baseKey,
+    256
+  );
+
+  return bufferToBase64(derivedBits);
+}
+
+function constantTimeEqual(
+  a: string,
+  b: string
+): boolean {
+  const encoder = new TextEncoder();
+
+  const left = encoder.encode(a);
+  const right = encoder.encode(b);
+
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  let difference = 0;
+
+  for (let i = 0; i < left.length; i++) {
+    difference |= left[i]! ^ right[i]!;
+  }
+
+  return difference === 0;
 }

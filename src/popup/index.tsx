@@ -192,7 +192,7 @@ const handleSetMasterPassword = async (e: React.FormEvent) => {
 
 if (view === 'setup') {
   return (
-    <div className="popup-shell ">
+    <div className="popup-shell w-full ">
       <div className="popup-header">
         <h1 className="text-lg font-bold">IVAC Assistant</h1>
         <p className="text-sm opacity-90">Create Master Password</p>
@@ -255,7 +255,7 @@ if (view === 'setup') {
 
   if (view === 'unlock') {
     return (
-      <div className="popup-shell">
+      <div className="popup-shell w-full">
         <div className="popup-header">
           <h1 className="text-lg text-red-500 font-bold">IVAC Assistant</h1>
           <p className="text-sm opacity-90">Extension Locked</p>
