@@ -34,8 +34,9 @@ case 'SUBMIT_OTP': {
     break;
   }
 
-  handleOTPSubmission({ otp });
-  sendResponse({ success: true });
+  const result = handleOTPSubmission({ otp });
+
+  sendResponse(result);
   break;
 }
 
@@ -110,14 +111,15 @@ if (
   return;
 }
   // Find username/email field
-  const usernameField = document.querySelector<HTMLInputElement>(
-    'input[type="email"], input[type="text"][name*="email"], input[name*="username"], input[id*="email"], input[id*="username"]'
-  );
+ // Find phone number field
+const usernameField = document.querySelector<HTMLInputElement>(
+  'input[name="phone"]'
+);
 
-  // Find password field
-  const passwordField = document.querySelector<HTMLInputElement>(
-    'input[type="password"]'
-  );
+// Find password field
+const passwordField = document.querySelector<HTMLInputElement>(
+  'input[type="password"][name="password"]'
+);
 
   if (!usernameField || !passwordField) {
     console.error('Login fields not found');
@@ -251,80 +253,146 @@ function showNotification(message: string, type: 'success' | 'error' | 'info' = 
 }
 
 // Detect OTP input fields
-function detectOTPField() {
-  const otpFields = document.querySelectorAll<HTMLInputElement>(
-    'input[type="text"][maxlength="6"], input[type="number"][maxlength="6"], input[name*="otp"], input[id*="otp"]'
-  );
+// let otpNotificationShown = false;
 
-  if (otpFields.length > 0) {
-    console.log('OTP field detected');
-    // Notify user to enter OTP manually
-    showNotification('Please enter the OTP you received', 'info');
-  }
-}
+// function detectOTPField() {
+//   const otpField = document.querySelector(
+//     'input[type="text"][maxlength="6"], input[type="number"][maxlength="6"], input[name*="otp"], input[id*="otp"]'
+//   );
+
+//   if (otpField && !otpNotificationShown) {
+//     otpNotificationShown = true;
+
+//     console.log('OTP field detected');
+
+//     showNotification(
+//       'Please enter the OTP you received',
+//       'info'
+//     );
+//   }
+// }
+
+// const observer = new MutationObserver(() => {
+//   detectOTPField();
+// });
+
+// observer.observe(document.body, {
+//   childList: true,
+//   subtree: true
+// });
 
 // Run detection on load
 detectPageType();
 
 // Watch for dynamic content changes
-const observer = new MutationObserver(() => {
-  detectOTPField();
-});
 
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-});
 
 // Clean up on page unload
-window.addEventListener('beforeunload', () => {
-  observer.disconnect();
-});
+// window.addEventListener('beforeunload', () => {
+//   observer.disconnect();
+// });
 
 /**
  * Handle OTP submission (user-controlled)
  * Only fills the OTP field, user must click submit
  */
-function handleOTPSubmission(payload: { otp: string }) {
-  console.log('Handling OTP submission');
+function handleOTPSubmission(
+  payload: { otp: string }
+): { success: boolean; error?: string } {
+  const otp = payload?.otp;
 
-  if (!payload?.otp) {
-    showNotification('OTP value is missing', 'error');
-    return;
+  if (
+    typeof otp !== 'string' ||
+    !/^\d{4,6}$/.test(otp)
+  ) {
+    return {
+      success: false,
+      error: 'Invalid OTP format.',
+    };
   }
 
-  // Find OTP input field using multiple selectors
   const otpField = document.querySelector<HTMLInputElement>(
-    'input[name*="otp" i], input[id*="otp" i], input[placeholder*="otp" i], ' +
-    'input[type="text"][maxlength="4"], input[type="text"][maxlength="6"], ' +
-    'input[type="number"][maxlength="4"], input[type="number"][maxlength="6"]'
+    'input[name*="otp" i], ' +
+    'input[id*="otp" i], ' +
+    'input[placeholder*="otp" i], ' +
+    'input[type="text"][maxlength="4"], ' +
+    'input[type="text"][maxlength="6"], ' +
+    'input[type="number"][maxlength="4"], ' +
+    'input[type="number"][maxlength="6"]'
   );
 
   if (!otpField) {
-    console.error('OTP field not found');
-    showNotification('Could not find OTP input field on this page', 'error');
-    return;
+    showNotification(
+      'Could not find OTP input field on this page.',
+      'error'
+    );
+
+    return {
+      success: false,
+      error: 'OTP input field not found.',
+    };
   }
 
-  // Fill OTP field
-  otpField.value = payload.otp;
-  otpField.dispatchEvent(new Event('input', { bubbles: true }));
-  otpField.dispatchEvent(new Event('change', { bubbles: true }));
+  if (otpField.disabled || otpField.readOnly) {
+    return {
+      success: false,
+      error: 'OTP input field is not editable.',
+    };
+  }
 
-  // Highlight the submit button
+  // Use the native setter to support React-controlled inputs.
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value'
+  )?.set;
+
+  if (!valueSetter) {
+    return {
+      success: false,
+      error: 'Could not access OTP input field.',
+    };
+  }
+
+  valueSetter.call(otpField, otp);
+
+  otpField.dispatchEvent(
+    new Event('input', { bubbles: true })
+  );
+
+  otpField.dispatchEvent(
+    new Event('change', { bubbles: true })
+  );
+
+  // Verify that the value was actually filled.
+  if (otpField.value !== otp) {
+    return {
+      success: false,
+      error: 'OTP could not be filled successfully.',
+    };
+  }
+
   const submitButton = document.querySelector<
-  HTMLButtonElement | HTMLInputElement
->(
-  'button[type="submit"], input[type="submit"]'
-);
+    HTMLButtonElement | HTMLInputElement
+  >(
+    'button[type="submit"], input[type="submit"]'
+  );
 
   if (submitButton) {
     submitButton.style.outline = '3px solid #10b981';
     submitButton.style.outlineOffset = '2px';
-    submitButton.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    submitButton.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+    });
   }
 
-  showNotification('OTP filled. Please review and click Submit button.', 'success');
+  showNotification(
+    'OTP filled. Please review and click Submit manually.',
+    'success'
+  );
+
+  return { success: true };
 }
 
 /**

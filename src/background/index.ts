@@ -55,18 +55,27 @@ chrome.runtime.onMessage.addListener((
   sendResponse: (response: MessageResponse) => void
 ) => {
   // Accept messages only from this extension's own pages
-  const extensionOrigin = chrome.runtime.getURL('');
+const extensionOrigin = chrome.runtime.getURL('');
 
-  if (
-    sender.id !== chrome.runtime.id ||
-    !sender.url?.startsWith(extensionOrigin)
-  ) {
-    sendResponse({
-      success: false,
-      error: 'Unauthorized message sender.',
-    });
-    return false;
-  }
+const isExtensionPage =
+  sender.id === chrome.runtime.id &&
+  !!sender.url?.startsWith(extensionOrigin);
+
+const isTrustedContentScript =
+  sender.id === chrome.runtime.id &&
+  !!sender.tab?.id &&
+  isTrustedIvacUrl(sender.url);
+
+if (!isExtensionPage && !isTrustedContentScript) {
+  sendResponse({
+    success: false,
+    error: 'Unauthorized message sender.',
+  });
+
+  return false;
+}
+
+
 
   handleMessage(message, sender)
     .then((data) => sendResponse({ success: true, data }))
@@ -176,15 +185,31 @@ if (!locked && !allowedWhileLocked.has(message.type)) {
     case 'UPDATE_SETTINGS':
       return await updateSettings(message.payload as Parameters<typeof updateSettings>[0]);
 
-    case 'AUTOFILL_LOGIN':
-      return await handleAutofillLogin(sender.tab?.id, message.payload as string);
+   case 'AUTOFILL_LOGIN': {
+  const tabId = await getIvacTabId(sender);
 
-    case 'REQUEST_OTP':
-      return await handleOTPRequest(sender.tab?.id, message.payload as string);
+  return await handleAutofillLogin(
+    tabId,
+    message.payload as string
+  );
+}
+case 'REQUEST_OTP': {
+  const tabId = await getIvacTabId(sender);
 
-    case 'SUBMIT_OTP':
-      return await handleOTPSubmit(sender.tab?.id, message.payload as { profileId: string; otp: string });
+  return await handleOTPRequest(
+    tabId,
+    message.payload as string
+  );
+}
 
+case 'SUBMIT_OTP': {
+  const tabId = await getIvacTabId(sender);
+
+  return await handleOTPSubmit(
+    tabId,
+    message.payload as { profileId: string; otp: string }
+  );
+}
     case 'CLEAR_ALL_DATA':
       await clearAllData();
       return { success: true };
@@ -234,6 +259,43 @@ async function handleAutofillLogin(tabId: number | undefined, profileId: string)
   return { success: true };
 }
 
+
+function isTrustedIvacUrl(url?: string): boolean {
+  if (!url) return false;
+
+  try {
+    const parsedUrl = new URL(url);
+
+    return (
+      parsedUrl.protocol === 'https:' &&
+      (
+        parsedUrl.hostname === 'ivacbd.com' ||
+        parsedUrl.hostname.endsWith('.ivacbd.com')
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function getIvacTabId(
+  sender: chrome.runtime.MessageSender
+): Promise<number> {
+  // Content script থেকে এলে তার নিজের tab
+  if (sender.tab?.id !== undefined && isTrustedIvacUrl(sender.tab.url)) {
+    return sender.tab.id;
+  }
+
+  // Popup বা detached window থেকে এলে সাধারণ window-গুলোর active tab থেকে IVAC tab খোঁজো
+  const tabs = await chrome.tabs.query({ active: true, windowType: 'normal' });
+  const ivacTab = tabs.find((tab) => isTrustedIvacUrl(tab.url));
+
+  if (ivacTab?.id === undefined) {
+    throw new Error('Please open the official IVAC website first.');
+  }
+
+  return ivacTab.id;
+}
 /**
  * Handle OTP request
  */

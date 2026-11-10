@@ -166,7 +166,17 @@ const handleSetMasterPassword = async (e: React.FormEvent) => {
   const handleOpenOptions = () => {
     chrome.runtime.openOptionsPage();
   };
+const isDetached = new URLSearchParams(window.location.search).get('detached') === '1';
 
+const handleDetach = async () => {
+  await chrome.windows.create({
+    url: chrome.runtime.getURL('popup.html') + '?detached=1',
+    type: 'popup',
+    width: 440,
+    height: 700,
+  });
+  window.close();
+};
   const handleAutofill = async () => {
     if (!activeProfileId) {
       alert('Please select a profile first');
@@ -174,8 +184,8 @@ const handleSetMasterPassword = async (e: React.FormEvent) => {
     }
 
     try {
-      await sendMessage({ type: 'AUTOFILL_LOGIN', payload: activeProfileId });
-      window.close();
+     await sendMessage({ type: 'AUTOFILL_LOGIN', payload: activeProfileId });
+if (!isDetached) window.close();
     } catch (error) {
       alert('Failed to autofill. Make sure you are on the IVAC website.');
     }
@@ -255,7 +265,7 @@ if (view === 'setup') {
 
   if (view === 'unlock') {
     return (
-      <div className="popup-shell w-full">
+      <div className="w-full max-h-[600px] overflow-y-auto">
         <div className="popup-header">
           <h1 className="text-lg text-red-500 font-bold">IVAC Assistant</h1>
           <p className="text-sm opacity-90">Extension Locked</p>
@@ -305,6 +315,18 @@ if (view === 'setup') {
       <div className="popup-header">
         <div className="flex items-center justify-between mb-2">
           <h1 className="text-lg text-red-500 font-bold">IVAC Assistant</h1>
+          {!isDetached && (
+  <button
+    onClick={handleDetach}
+    className="p-1 hover:bg-blue-500 rounded"
+    title="Open in movable window"
+  >
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+    </svg>
+  </button>
+)}
           <div className="flex gap-2">
             <button
               onClick={handleLock}

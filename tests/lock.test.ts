@@ -152,7 +152,34 @@ describe('Master Password Security', () => {
     expect(migrated.verifierSalt).toBeDefined();
     expect(await isLocked()).toBe(false);
   });
+  it('should treat the extension as locked when the session key is missing (browser restart)', async () => {
+    await setMasterPassword('TestPassword123');
+    expect(await isLocked()).toBe(false);
 
+    // Browser restart: storage.session মুছে যায়, storage.local থেকে যায়
+    for (const key of Object.keys(sessionData)) {
+      delete sessionData[key];
+    }
+
+    expect((localData['ivac_lock_state'] as { isLocked: boolean }).isLocked).toBe(false);
+    expect(await isLocked()).toBe(true);
+  });
+
+  it('should allow unlocking again after a simulated restart', async () => {
+    await setMasterPassword('TestPassword123');
+
+    for (const key of Object.keys(sessionData)) {
+      delete sessionData[key];
+    }
+
+    expect(await isLocked()).toBe(true);
+
+    const result = await unlockExtension('TestPassword123');
+
+    expect(result).toBe(true);
+    expect(await isLocked()).toBe(false);
+    expect(sessionData[SESSION_KEY]).toBeDefined();
+  });
   it('should remove the session key when locking', async () => {
     await setMasterPassword('TestPassword123');
 

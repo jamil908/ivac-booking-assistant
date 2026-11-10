@@ -199,9 +199,15 @@ export async function lockExtension(): Promise<void> {
 export async function isLocked(): Promise<boolean> {
   const result = await chrome.storage.local.get(LOCK_STATE_KEY);
   const state = result[LOCK_STATE_KEY] as LockState | undefined;
-  return state?.isLocked ?? true; // Default to locked
-}
 
+  // state নেই বা locked হলে সরাসরি locked
+  if (state?.isLocked ?? true) return true;
+
+  // state "unlocked" বলছে, কিন্তু session key না থাকলে (যেমন browser restart-এর পর)
+  // আসলে decrypt করা সম্ভব না, তাই locked ধরো
+  const session = await chrome.storage.session.get(ENCRYPTION_KEY_SESSION);
+  return !session[ENCRYPTION_KEY_SESSION];
+}
 /**
  * Check if master password is set
  */
