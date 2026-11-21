@@ -1,0 +1,141 @@
+@import "tailwindcss";
+
+
+
+/* =================================
+   IVAC ASSISTANT — CREAM & BURGUNDY
+================================= */
+
+:root {
+  font-family: Inter, "Segoe UI", sans-serif;
+  color: #332a29;
+  background: #f7f3ed;
+
+  --ivac-bg: #f7f3ed;
+  --ivac-surface: #fffdf9;
+  --ivac-primary: #722f45;
+  --ivac-primary-hover: #5e2538;
+  --ivac-secondary: #a66b7c;
+  --ivac-text: #332a29;
+  --ivac-muted: #857875;
+  --ivac-border: #e8ddd5;
+  --ivac-success: #47765d;
+  --ivac-danger: #b84c50;
+  --ivac-warning: #b7833d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--ivac-bg);
+  color: var(--ivac-text);
+  font-family: Inter, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+input,
+select,
+textarea {
+  color: var(--ivac-text);
+  background: var(--ivac-surface);
+  border: 1px solid var(--ivac-border);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--ivac-primary);
+  box-shadow: 0 0 0 3px rgba(114, 47, 69, 0.10);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #aa9d98;
+}
+
+/* Scrollbar */
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1eae2;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c9aab2;
+  border-radius: 20px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ivac-primary);
+}
+
+/* Selection */
+
+::selection {
+  color: #fffdf9;
+  background: var(--ivac-primary);
+}
+
+/* Links */
+
+a {
+  color: var(--ivac-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--ivac-primary-hover);
+}
+
+/* Disabled elements */
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* Smooth transitions */
+
+.transition,
+[class*="transition-"] {
+  transition-duration: 200ms;
+}
+
+/* Focus accessibility */
+
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--ivac-secondary);
+  outline-offset: 3px;
+}

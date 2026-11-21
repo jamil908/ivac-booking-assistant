@@ -167,10 +167,43 @@ export type MessageType =
   | 'PAUSE_BOOKING'
   | 'RESUME_BOOKING'
   | 'SET_MASTER_PASSWORD'
-  | 'CLEAR_ALL_DATA';
+  | 'CLEAR_ALL_DATA'
+  | 'LIST_FILES'
+  | 'ADD_FILE'
+  | 'REPLACE_FILE'
+  | 'UPDATE_FILE'
+  | 'MOVE_FILE'
+  | 'DELETE_FILE'
+  | 'GET_UPLOAD_FILES'
+  | 'LOG_EVENT'
+  | 'GET_LOG'
+  | 'CLEAR_LOG'
+  | 'INJECT_FILE'
+  | 'GET_UPLOAD_STATE';
 
 export interface MessageResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
+}
+/** A saved BGD web file (PDF). The first file of a profile is the primary applicant's file. */
+export interface StoredFileInfo {
+  id: string;
+  name: string;
+  size: number;
+  lastModified?: number;
+  addedAt: number;
+  /** the user confirmed this is the right file for its position */
+  verified: boolean;
+  role: 'primary' | 'secondary';
+}
+/** One line of the activity log (never contains credentials, OTPs or file contents) */
+export interface LogEntry {
+  /** epoch milliseconds */
+  t: number;
+  level: 'info' | 'warn' | 'error';
+  /** which part wrote it, for example "upload" or "nav:notice-next" */
+  step: string;
+  msg: string;
+  data?: Record<string, string | number | boolean>;
 }

@@ -18,6 +18,7 @@ import {
   getSettings,
   updateSettings,
   clearAllData,
+  getActiveProfileId,
 } from '../storage';
 import {
   isLocked,
@@ -29,13 +30,34 @@ import {
   checkInactivityTimeout,
   updateLastActivity,
 } from '../security/lock';
-
+import {
+  isTrustedInvoiceUrl,
+  paymentStepFromResult,
+  buildPaymentInfo,
+  invoiceFilename,
+} from '../payment/helpers';
+import type { PaymentCheckResult } from '../payment/helpers';
+import {
+  listFiles,
+  addFile,
+  replaceFile,
+  updateFile,
+  moveFile,
+  deleteFile,
+  deleteAllFiles,
+  getUploadBundle,
+  getVerifiedFile,
+} from '../storage/files';
+import { appendLog, clearLog, getLog, sanitizeLogEntry } from '../storage/log';
 // Initialize storage on install
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('IVAC Assistant installed');
   await initializeStorage();
 });
 
+chrome.runtime.onStartup.addListener(async () => {
+  await chrome.storage.local.set({ ivac_automation_running: false });
+});
 // Check inactivity timeout periodically
 chrome.alarms.create('checkInactivity', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -55,40 +77,86 @@ chrome.runtime.onMessage.addListener((
   sendResponse: (response: MessageResponse) => void
 ) => {
   // Accept messages only from this extension's own pages
-const extensionOrigin = chrome.runtime.getURL('');
+  const extensionOrigin = chrome.runtime.getURL('');
 
-const isExtensionPage =
-  sender.id === chrome.runtime.id &&
-  !!sender.url?.startsWith(extensionOrigin);
+  const isExtensionPage =
+    sender.id === chrome.runtime.id &&
+    !!sender.url?.startsWith(extensionOrigin);
 
-const isTrustedContentScript =
-  sender.id === chrome.runtime.id &&
-  !!sender.tab?.id &&
-  isTrustedIvacUrl(sender.url);
+  const isTrustedContentScript =
+    sender.id === chrome.runtime.id &&
+    !!sender.tab?.id &&
+    isTrustedIvacUrl(sender.url);
 
-if (!isExtensionPage && !isTrustedContentScript) {
-  sendResponse({
-    success: false,
-    error: 'Unauthorized message sender.',
-  });
+  if (!isExtensionPage && !isTrustedContentScript) {
+    sendResponse({
+      success: false,
+      error: 'Unauthorized message sender.',
+    });
 
-  return false;
-}
-
-
+    return false;
+  }
 
   handleMessage(message, sender)
-    .then((data) => sendResponse({ success: true, data }))
-    .catch((error) =>
+    .then((data) => {
+      sendResponse({ success: true, data });
+    })
+    .catch((error) => {
+      const text = error instanceof Error ? error.message : 'Unknown error';
+
+      if (
+        message?.type !== 'LOG_EVENT' &&
+        message?.type !== 'GET_LOG' &&
+        message?.type !== 'CLEAR_LOG'
+      ) {
+        const entry = sanitizeLogEntry({
+          level: 'error',
+          step: 'background',
+          msg: `${message?.type}: ${text}`,
+        });
+
+        if (entry) void appendLog(entry);
+      }
+
       sendResponse({
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-    );
+        error: text,
+      });
+    });
 
   return true;
 });
+function requireText(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Invalid ${label}.`);
+  }
+  return value;
+}
 
+function isAppointmentUrl(url: string | undefined): boolean {
+  try {
+    const parsed = new URL(url ?? '');
+    return parsed.protocol === 'https:' && parsed.hostname === 'appointment.ivacbd.com';
+  } catch {
+    return false;
+  }
+}
+async function getAppointmentTabId(sender: chrome.runtime.MessageSender): Promise<number> {
+  const tabId = await getIvacTabId(sender);
+  const tab = await chrome.tabs.get(tabId);
+  if (!isAppointmentUrl(tab.url)) {
+    throw new Error('Open the IVAC appointment page (appointment.ivacbd.com) first.');
+  }
+  return tabId;
+}
+
+async function askAppointmentTab(tabId: number, message: { type: string; payload?: unknown }): Promise<unknown> {
+  const response = await chrome.tabs.sendMessage(tabId, message);
+  if (!response?.success) {
+    throw new Error(response?.error ?? 'The IVAC page did not answer. Reload the tab and try again.');
+  }
+  return response.data;
+}
 /**
  * Route messages to appropriate handlers
  */
@@ -113,6 +181,9 @@ async function handleMessage(message: Message, sender: chrome.runtime.MessageSen
     'SET_MASTER_PASSWORD',
     'UNLOCK_EXTENSION',
     'LOCK_EXTENSION',
+    'LOG_EVENT',
+    'GET_LOG',
+    'CLEAR_LOG',
   ]);
 
 
@@ -162,6 +233,7 @@ if (!locked && !allowedWhileLocked.has(message.type)) {
 
     case 'DELETE_PROFILE':
       await deleteProfile(message.payload as string);
+      await deleteAllFiles(message.payload as string);
       return { success: true };
 
     case 'SET_ACTIVE_PROFILE':
@@ -210,6 +282,96 @@ case 'SUBMIT_OTP': {
     message.payload as { profileId: string; otp: string }
   );
 }
+    case 'CHECK_PAYMENT_STATUS': {
+  const tabId = await getIvacTabId(sender);
+  return await handleCheckPayment(tabId, message.payload as string);
+}
+
+case 'SAVE_INVOICE': {
+  const tabId = await getIvacTabId(sender);
+  return await handleSaveInvoice(tabId, message.payload as string);
+}
+    case 'LOG_EVENT': {
+      const entry = sanitizeLogEntry(message.payload);
+      if (entry) await appendLog(entry);
+      return true;
+    }
+
+    case 'GET_LOG':
+      return await getLog();
+
+    case 'CLEAR_LOG':
+      await clearLog();
+      return true;
+
+    case 'GET_UPLOAD_STATE': {
+      const tabId = await getAppointmentTabId(sender);
+      return await askAppointmentTab(tabId, { type: 'GET_UPLOAD_STATE' });
+    }
+
+    case 'INJECT_FILE': {
+      // only the extension's own pages (the popup) may start a manual upload
+      if (!sender.url?.startsWith(chrome.runtime.getURL(''))) {
+        throw new Error('Manual upload can only be started from the extension popup.');
+      }
+      const p = (message.payload ?? {}) as Record<string, unknown>;
+      const fileId = requireText(p.fileId, 'file');
+      const profileId = await getActiveProfileId();
+      if (!profileId) throw new Error('No active profile selected.');
+
+      const tabId = await getAppointmentTabId(sender);
+      const file = await getVerifiedFile(profileId, fileId);
+      return await askAppointmentTab(tabId, { type: 'INJECT_FILE', payload: file });
+    }
+    case 'LIST_FILES':
+      return await listFiles(requireText(message.payload, 'profile'));
+
+    case 'ADD_FILE': {
+      const p = (message.payload ?? {}) as Record<string, unknown>;
+      return await addFile(requireText(p.profileId, 'profile'), {
+        name: requireText(p.name, 'file name'),
+        lastModified: typeof p.lastModified === 'number' ? p.lastModified : undefined,
+        dataBase64: requireText(p.dataBase64, 'file data'),
+      });
+    }
+
+    case 'REPLACE_FILE': {
+      const p = (message.payload ?? {}) as Record<string, unknown>;
+      return await replaceFile(requireText(p.profileId, 'profile'), requireText(p.fileId, 'file'), {
+        name: requireText(p.name, 'file name'),
+        lastModified: typeof p.lastModified === 'number' ? p.lastModified : undefined,
+        dataBase64: requireText(p.dataBase64, 'file data'),
+      });
+    }
+
+    case 'UPDATE_FILE': {
+      const p = (message.payload ?? {}) as Record<string, unknown>;
+      return await updateFile(requireText(p.profileId, 'profile'), requireText(p.fileId, 'file'), {
+        ...(typeof p.name === 'string' && { name: p.name }),
+        ...(typeof p.verified === 'boolean' && { verified: p.verified }),
+      });
+    }
+
+    case 'MOVE_FILE': {
+      const p = (message.payload ?? {}) as Record<string, unknown>;
+      if (p.direction !== 'up' && p.direction !== 'down') throw new Error('Invalid direction.');
+      return await moveFile(requireText(p.profileId, 'profile'), requireText(p.fileId, 'file'), p.direction);
+    }
+
+    case 'DELETE_FILE': {
+      const p = (message.payload ?? {}) as Record<string, unknown>;
+      return await deleteFile(requireText(p.profileId, 'profile'), requireText(p.fileId, 'file'));
+    }
+
+    case 'GET_UPLOAD_FILES': {
+      // the saved PDFs may only be sent to the IVAC appointment page
+      if (!isAppointmentUrl(sender.url)) {
+        throw new Error('Saved files can only be sent to the IVAC appointment page.');
+      }
+      const profileId = await getActiveProfileId();
+      if (!profileId) throw new Error('No active profile selected.');
+      return await getUploadBundle(profileId);
+    }
     case 'CLEAR_ALL_DATA':
       await clearAllData();
       return { success: true };
@@ -391,13 +553,13 @@ async function handleOTPSubmit(
     throw new Error('OTP has expired. Please request a new OTP.');
   }
 
-  const response = await chrome.tabs.sendMessage(tabId, {
+    const response = await chrome.tabs.sendMessage(tabId, {
     type: 'SUBMIT_OTP',
     payload: { otp },
   });
 
   if (!response?.success) {
-    throw new Error('Could not send OTP to the IVAC page');
+    throw new Error(response?.error ?? 'Could not send OTP to the IVAC page');
   }
 
   // OTP is filled, but authentication is NOT confirmed.
@@ -406,6 +568,105 @@ async function handleOTPSubmit(
     otpRequested: true,
     needsManualAction: true,
     manualActionMessage: 'OTP filled. Please submit it manually and verify login.',
+  });
+
+  return { success: true };
+}
+function assertProfileId(id: unknown): asserts id is string {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('Invalid profile ID');
+  }
+}
+
+async function askContentScript<T>(
+  tabId: number,
+  message: { type: string }
+): Promise<T> {
+  const response = await chrome.tabs.sendMessage(tabId, message);
+  if (!response?.success) {
+    throw new Error(response?.error ?? 'Could not read the IVAC page');
+  }
+  return response.data as T;
+}
+
+/**
+ * Payment status পড়ো (read-only, পেজ reload/navigate করে না)
+ */
+async function handleCheckPayment(
+  tabId: number,
+  profileId: string
+): Promise<PaymentCheckResult> {
+  assertProfileId(profileId);
+
+  const profile = await getProfile(profileId);
+  if (!profile) throw new Error('Profile not found');
+
+  const result = await askContentScript<PaymentCheckResult>(tabId, {
+    type: 'CHECK_PAYMENT_STATUS',
+  });
+
+  const step = paymentStepFromResult(result);
+
+  if (step) {
+    await updateBookingState(profileId, {
+      tabId,
+      currentStep: step,
+      paymentInfo: buildPaymentInfo(result),
+      // undefined দিয়ে আগের মান মুছে ফেলো না
+      ...(result.confirmationNumber && { confirmationNumber: result.confirmationNumber }),
+      ...(result.invoiceUrl && { invoiceUrl: result.invoiceUrl }),
+      needsManualAction: step !== 'payment_success',
+      manualActionMessage: result.message,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Invoice ডাউনলোড করো। পেজ না ছেড়ে chrome.downloads দিয়ে।
+ */
+async function handleSaveInvoice(
+  tabId: number,
+  profileId: string
+): Promise<{ success: boolean }> {
+  assertProfileId(profileId);
+
+  const profile = await getProfile(profileId);
+  if (!profile) throw new Error('Profile not found');
+
+  const result = await askContentScript<PaymentCheckResult>(tabId, {
+    type: 'CHECK_PAYMENT_STATUS',
+  });
+
+  if (!result.isPaymentPage) {
+    throw new Error('Open the payment or confirmation page first.');
+  }
+  if (!result.hasInvoice || !result.invoiceUrl) {
+    throw new Error('No invoice link found on this page.');
+  }
+  if (!isTrustedInvoiceUrl(result.invoiceUrl)) {
+    throw new Error('Invoice link is not a trusted https IVAC address.');
+  }
+
+  const downloadId = await chrome.downloads.download({
+    url: result.invoiceUrl,
+    filename: invoiceFilename(result.invoiceUrl),
+    conflictAction: 'uniquify',
+    saveAs: false,
+  });
+
+  if (downloadId === undefined) {
+    throw new Error('Download could not be started.');
+  }
+
+  // এখানে ডাউনলোড শুরু হয়েছে, শেষ হয়েছে কিনা এখনো জানা নেই
+  await updateBookingState(profileId, {
+    tabId,
+    currentStep: 'invoice_saved',
+    invoiceUrl: result.invoiceUrl,
+    needsManualAction: false,
+    manualActionMessage: 'Invoice download started. Check your Downloads folder.',
   });
 
   return { success: true };

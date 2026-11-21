@@ -3,14 +3,13 @@
   "name": "IVAC Appointment Assistant",
   "version": "1.0.0",
   "description": "Secure appointment booking assistant for IVAC Bangladesh visa application center",
-  "permissions": [
-    "storage",
-    "tabs",
-    "scripting",
-    "activeTab",
-    "notifications",
-    "alarms"
-  ],
+ "permissions": [
+  "storage",
+  "tabs",
+  "notifications",
+  "alarms",
+  "downloads"
+],
   "host_permissions": [
     "https://appointment.ivacbd.com/*",
     "https://*.ivacbd.com/*"
